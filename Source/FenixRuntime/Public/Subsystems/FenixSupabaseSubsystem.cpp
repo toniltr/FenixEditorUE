@@ -8,6 +8,7 @@
 #include "Serialization/JsonWriter.h"
 #include "GameFramework/SaveGame.h"
 #include "Kismet/GameplayStatics.h"
+#include "FenixDeveloperSettings.h"
 
 // Nombre del slot para persistir sesión
 static const FString FenixSaveSlot = TEXT("FenixSession");
@@ -19,7 +20,26 @@ static const int32   FenixSaveIdx  = 0;
 void UFenixSupabaseSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
-    LoadSessionFromSlot();   // Intenta restaurar sesión previa
+
+    // ── Lee config desde Project Settings ────────────────────
+    const UFenixDeveloperSettings* Settings = UFenixDeveloperSettings::Get();
+
+    if (Settings)
+    {
+        SupabaseUrl     = Settings->SupabaseUrl;
+        SupabaseAnonKey = Settings->SupabaseAnonKey;
+
+        if (Settings->bVerboseLogging)
+        {
+            UE_LOG(LogTemp, Log, TEXT("[Fenix] URL: %s"), *SupabaseUrl);
+            UE_LOG(LogTemp, Log, TEXT("[Fenix] AnonKey configurada: %s"),
+                   SupabaseAnonKey.IsEmpty() ? TEXT("NO") : TEXT("SÍ"));
+        }
+    }
+
+    // ── Restaura sesión previa ────────────────────────────────
+    LoadSessionFromSlot();
+
     UE_LOG(LogTemp, Log, TEXT("[Fenix] Subsystem iniciado. Sesión activa: %s"),
            IsLoggedIn() ? TEXT("SÍ") : TEXT("NO"));
 }
@@ -224,6 +244,7 @@ void UFenixSupabaseSubsystem::OnRefreshResponse(
         UE_LOG(LogTemp, Warning, TEXT("[Fenix] Refresh fallido, cerrando sesión"));
         CurrentSession = FFenixSession{};
         SaveSessionToSlot();
+        OnRefreshSessionResult.Broadcast(false, CurrentSession, TEXT("Failed to refresh session"));
         return;
     }
 
@@ -233,6 +254,7 @@ void UFenixSupabaseSubsystem::OnRefreshResponse(
         CurrentSession = NewSession;
         SaveSessionToSlot();
         UE_LOG(LogTemp, Log, TEXT("[Fenix] Token refrescado OK"));
+        OnRefreshSessionResult.Broadcast(true, CurrentSession, TEXT(""));
     }
 }
 
@@ -693,6 +715,24 @@ void UFenixSupabaseSubsystem::OnFetchStoriesResponse(
     OnStoriesListLoaded.Broadcast(true, Stories);
 }
 
+void UFenixSupabaseSubsystem::FetchMyStories()
+{
+    if (!IsLoggedIn())
+    {
+        OnStoriesListLoaded.Broadcast(false, {});
+        return;
+    }
+
+    // RLS filtra automáticamente por el JWT del usuario
+    FString Endpoint = TEXT("/rest/v1/stories?select=uuid,name,description,status,updated_at&order=updated_at.desc");
+
+    auto Req = MakeRequest(Endpoint, TEXT("GET"), /*bUseAuthToken=*/true);
+    Req->OnProcessRequestComplete().BindUObject(
+        this, &UFenixSupabaseSubsystem::OnFetchStoriesResponse
+    );
+    Req->ProcessRequest();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Persistencia de sesión (SaveGame simple)
 // ─────────────────────────────────────────────────────────────
@@ -723,3 +763,5 @@ void UFenixSupabaseSubsystem::LoadSessionFromSlot()
         RefreshSession();
     }
 }
+
+

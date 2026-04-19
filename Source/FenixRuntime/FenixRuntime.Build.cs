@@ -28,9 +28,11 @@ public class FenixRuntime : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"HTTP",           // ← peticiones HTTP
-				"Json",           // ← parseo JSON
-				"JsonUtilities"   // ← FJsonObjectConverter
+				"HTTP",           
+				"Json",           
+				"JsonUtilities",   
+				"DeveloperSettings"  
+
 			}
 			);
 			

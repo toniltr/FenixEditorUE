@@ -61,6 +61,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     const TArray<FFenixStory>&, Stories
 );
 
+
+
 // ─────────────────────────────────────────────────────────────
 
 UCLASS()
@@ -85,6 +87,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category="Fenix|Auth")
     FOnLogoutResult OnLogoutResult;
+
+    UPROPERTY(BlueprintAssignable, Category="Fenix|Auth")
+    FOnAuthResult OnRefreshSessionResult;
 
     // ── Eventos Data ─────────────────────────────────────────
     UPROPERTY(BlueprintAssignable, Category="Fenix|Events")
@@ -147,6 +152,9 @@ public:
 
     UFUNCTION(BlueprintPure, Category="Fenix|Data")
     bool HasStoryLoaded() const { return bStoryLoaded; }
+
+    UFUNCTION(BlueprintCallable, Category="Fenix|API")
+    void FetchMyStories();
 
     // ── USubsystem ────────────────────────────────────────────
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
