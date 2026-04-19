@@ -326,10 +326,12 @@ bool UFenixSupabaseSubsystem::ParseSession(
     if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
         return false;
 
-    OutSession.AccessToken  = Root->GetStringField(TEXT("access_token"));
-    OutSession.RefreshToken = Root->GetStringField(TEXT("refresh_token"));
-    OutSession.ExpiresIn    = (int32)Root->GetNumberField(TEXT("expires_in"));
-    OutSession.TokenType    = Root->GetStringField(TEXT("token_type"));
+    Root->TryGetStringField(TEXT("access_token"),  OutSession.AccessToken);
+    Root->TryGetStringField(TEXT("refresh_token"), OutSession.RefreshToken);
+    Root->TryGetStringField(TEXT("token_type"),    OutSession.TokenType);
+    double ExpiresIn = 0.0;
+    if (Root->TryGetNumberField(TEXT("expires_in"), ExpiresIn))
+        OutSession.ExpiresIn = (int32)ExpiresIn;
 
     // Usuario anidado
     const TSharedPtr<FJsonObject>* UserObj;
@@ -381,6 +383,319 @@ void UFenixSupabaseSubsystem::SaveSessionToSlot()
     GConfig->Flush(false, GGameUserSettingsIni);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Helpers de parsing (privados, sin UObject)
+// ─────────────────────────────────────────────────────────────
+namespace
+{
+    FFenixVector3 ParseVector3(const TSharedPtr<FJsonObject>& Obj)
+    {
+        FFenixVector3 V;
+        if (!Obj.IsValid()) return V;
+        double Tmp;
+        if (Obj->TryGetNumberField(TEXT("x"), Tmp)) V.X = (float)Tmp;
+        if (Obj->TryGetNumberField(TEXT("y"), Tmp)) V.Y = (float)Tmp;
+        if (Obj->TryGetNumberField(TEXT("z"), Tmp)) V.Z = (float)Tmp;
+        return V;
+    }
+
+    FFenixRotation ParseRotation(const TSharedPtr<FJsonObject>& Obj)
+    {
+        FFenixRotation R;
+        if (!Obj.IsValid()) return R;
+        double Tmp;
+        if (Obj->TryGetNumberField(TEXT("pitch"), Tmp)) R.Pitch = (float)Tmp;
+        if (Obj->TryGetNumberField(TEXT("yaw"),   Tmp)) R.Yaw   = (float)Tmp;
+        if (Obj->TryGetNumberField(TEXT("roll"),  Tmp)) R.Roll  = (float)Tmp;
+        return R;
+    }
+
+    FFenixPlacement ParsePlacement(const TSharedPtr<FJsonObject>& Obj)
+    {
+        FFenixPlacement P;
+        if (!Obj.IsValid()) return P;
+        const TSharedPtr<FJsonObject>* Sub;
+        if (Obj->TryGetObjectField(TEXT("location"), Sub)) P.Location = ParseVector3(*Sub);
+        if (Obj->TryGetObjectField(TEXT("rotation"), Sub)) P.Rotation = ParseRotation(*Sub);
+        if (Obj->TryGetObjectField(TEXT("scale"),    Sub)) P.Scale    = ParseVector3(*Sub);
+        return P;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// ParseItem
+// ─────────────────────────────────────────────────────────────
+bool UFenixSupabaseSubsystem::ParseItem(TSharedPtr<FJsonObject> Obj, FFenixItem& Out)
+{
+    if (!Obj.IsValid()) return false;
+
+    Obj->TryGetStringField(TEXT("uuid"), Out.UUID);
+    Obj->TryGetStringField(TEXT("type"), Out.Type);
+
+    const TSharedPtr<FJsonObject>* Sub;
+    if (Obj->TryGetObjectField(TEXT("placement"), Sub))
+        Out.Placement = ParsePlacement(*Sub);
+
+    if (Obj->TryGetObjectField(TEXT("params"), Sub))
+    {
+        (*Sub)->TryGetStringField(TEXT("travel_to"), Out.Params.TravelTo);
+        (*Sub)->TryGetBoolField(TEXT("is_locked"),   Out.Params.bIsLocked);
+        double H = 0.0;
+        if ((*Sub)->TryGetNumberField(TEXT("hungry"), H))
+            Out.Params.Hungry = (int32)H;
+    }
+
+    return !Out.UUID.IsEmpty();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ParseNpc
+// ─────────────────────────────────────────────────────────────
+bool UFenixSupabaseSubsystem::ParseNpc(TSharedPtr<FJsonObject> Obj, FFenixNpc& Out)
+{
+    if (!Obj.IsValid()) return false;
+
+    Obj->TryGetStringField(TEXT("uuid"),          Out.UUID);
+    Obj->TryGetStringField(TEXT("name"),          Out.Name);
+    Obj->TryGetStringField(TEXT("dialogue_uuid"), Out.DialogueUUID);
+    Obj->TryGetStringField(TEXT("routine_uuid"),  Out.RoutineUUID);
+
+    return !Out.UUID.IsEmpty();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ParseQuest
+// ─────────────────────────────────────────────────────────────
+bool UFenixSupabaseSubsystem::ParseQuest(TSharedPtr<FJsonObject> Obj, FFenixQuest& Out)
+{
+    if (!Obj.IsValid()) return false;
+
+    Obj->TryGetStringField(TEXT("uuid"),        Out.UUID);
+    Obj->TryGetStringField(TEXT("name"),        Out.Name);
+    Obj->TryGetStringField(TEXT("description"), Out.Description);
+    double Ord = 0.0;
+    if (Obj->TryGetNumberField(TEXT("order"), Ord)) Out.Order = (int32)Ord;
+
+    const TArray<TSharedPtr<FJsonValue>>* ObjArr;
+    if (Obj->TryGetArrayField(TEXT("objectives"), ObjArr))
+    {
+        for (const auto& Val : *ObjArr)
+        {
+            const TSharedPtr<FJsonObject>* ObjObj;
+            if (!Val->TryGetObject(ObjObj)) continue;
+
+            FFenixObjective Objective;
+            (*ObjObj)->TryGetStringField(TEXT("uuid"),   Objective.UUID);
+            (*ObjObj)->TryGetStringField(TEXT("type"),   Objective.Type);
+            (*ObjObj)->TryGetStringField(TEXT("target"), Objective.Target);
+            (*ObjObj)->TryGetStringField(TEXT("item"),   Objective.Item);
+            double N = 0.0;
+            if ((*ObjObj)->TryGetNumberField(TEXT("order"),  N)) Objective.Order  = (int32)N;
+            if ((*ObjObj)->TryGetNumberField(TEXT("amount"), N)) Objective.Amount = (int32)N;
+            Out.Objectives.Add(Objective);
+        }
+    }
+
+    return !Out.UUID.IsEmpty();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ParseScene
+// ─────────────────────────────────────────────────────────────
+bool UFenixSupabaseSubsystem::ParseScene(TSharedPtr<FJsonObject> Obj, FFenixScene& Out)
+{
+    if (!Obj.IsValid()) return false;
+
+    Obj->TryGetStringField(TEXT("uuid"), Out.UUID);
+    Obj->TryGetStringField(TEXT("name"), Out.Name);
+    double W = 5.0, D = 5.0;
+    if (Obj->TryGetNumberField(TEXT("width"), W)) Out.Width = (int32)W;
+    if (Obj->TryGetNumberField(TEXT("depth"), D)) Out.Depth = (int32)D;
+
+    const TSharedPtr<FJsonObject>* Sub;
+    if (Obj->TryGetObjectField(TEXT("camera"), Sub)) Out.Camera = ParsePlacement(*Sub);
+    if (Obj->TryGetObjectField(TEXT("player"), Sub)) Out.Player = ParsePlacement(*Sub);
+
+    const TArray<TSharedPtr<FJsonValue>>* Arr;
+    if (Obj->TryGetArrayField(TEXT("items"), Arr))
+    {
+        for (const auto& Val : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* ItemObj;
+            if (!Val->TryGetObject(ItemObj)) continue;
+            FFenixItem Item;
+            if (ParseItem(*ItemObj, Item)) Out.Items.Add(Item);
+        }
+    }
+
+    if (Obj->TryGetArrayField(TEXT("scene_npcs"), Arr))
+    {
+        for (const auto& Val : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* NpcObj;
+            if (!Val->TryGetObject(NpcObj)) continue;
+            FFenixNpcPlacement NpcPlacement;
+            (*NpcObj)->TryGetStringField(TEXT("uuid"), NpcPlacement.UUID);
+            if ((*NpcObj)->TryGetObjectField(TEXT("placement"), Sub))
+                NpcPlacement.Placement = ParsePlacement(*Sub);
+            Out.Npcs.Add(NpcPlacement);
+        }
+    }
+
+    return !Out.UUID.IsEmpty();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ParseStory — recibe el array que devuelve PostgREST
+// ─────────────────────────────────────────────────────────────
+bool UFenixSupabaseSubsystem::ParseStory(const FString& JsonStr, FFenixStory& OutStory)
+{
+    TArray<TSharedPtr<FJsonValue>> Root;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || Root.Num() == 0)
+        return false;
+
+    const TSharedPtr<FJsonObject>* StoryObj;
+    if (!Root[0]->TryGetObject(StoryObj)) return false;
+    const TSharedPtr<FJsonObject>& S = *StoryObj;
+
+    S->TryGetStringField(TEXT("uuid"),        OutStory.UUID);
+    S->TryGetStringField(TEXT("name"),        OutStory.Name);
+    S->TryGetStringField(TEXT("description"), OutStory.Description);
+    S->TryGetStringField(TEXT("author"),      OutStory.Author);
+    S->TryGetStringField(TEXT("version"),     OutStory.Version);
+    S->TryGetStringField(TEXT("status"),      OutStory.Status);
+    S->TryGetStringField(TEXT("start_scene"), OutStory.StartScene);
+
+    const TArray<TSharedPtr<FJsonValue>>* Arr;
+    if (S->TryGetArrayField(TEXT("scenes"), Arr))
+    {
+        for (const auto& Val : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* Obj;
+            if (!Val->TryGetObject(Obj)) continue;
+            FFenixScene Scene;
+            if (ParseScene(*Obj, Scene)) OutStory.Scenes.Add(Scene);
+        }
+    }
+    if (S->TryGetArrayField(TEXT("npcs"), Arr))
+    {
+        for (const auto& Val : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* Obj;
+            if (!Val->TryGetObject(Obj)) continue;
+            FFenixNpc Npc;
+            if (ParseNpc(*Obj, Npc)) OutStory.Npcs.Add(Npc);
+        }
+    }
+    if (S->TryGetArrayField(TEXT("quests"), Arr))
+    {
+        for (const auto& Val : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* Obj;
+            if (!Val->TryGetObject(Obj)) continue;
+            FFenixQuest Quest;
+            if (ParseQuest(*Obj, Quest)) OutStory.Quests.Add(Quest);
+        }
+    }
+
+    return !OutStory.UUID.IsEmpty();
+}
+
+// ─────────────────────────────────────────────────────────────
+// OnFetchStoryResponse
+// ─────────────────────────────────────────────────────────────
+void UFenixSupabaseSubsystem::OnFetchStoryResponse(
+    FHttpRequestPtr Req, FHttpResponsePtr Res, bool bOk)
+{
+    if (!bOk || !Res.IsValid())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchStory: sin conexión"));
+        OnStoryLoaded.Broadcast(false, FFenixStory{});
+        return;
+    }
+
+    int32 Code = Res->GetResponseCode();
+    FString Body = Res->GetContentAsString();
+
+    if (Code != 200)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchStory fallido %d: %s"),
+               Code, *ExtractErrorMessage(Body));
+        OnStoryLoaded.Broadcast(false, FFenixStory{});
+        return;
+    }
+
+    FFenixStory Story;
+    if (!ParseStory(Body, Story))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchStory: error parseando historia"));
+        OnStoryLoaded.Broadcast(false, FFenixStory{});
+        return;
+    }
+
+    CurrentStory = Story;
+    bStoryLoaded = true;
+
+    UE_LOG(LogTemp, Log, TEXT("[Fenix] Historia cargada: %s (%d escenas, %d NPCs, %d quests)"),
+           *Story.Name, Story.Scenes.Num(), Story.Npcs.Num(), Story.Quests.Num());
+
+    OnStoryLoaded.Broadcast(true, CurrentStory);
+}
+
+// ─────────────────────────────────────────────────────────────
+// OnFetchStoriesResponse
+// ─────────────────────────────────────────────────────────────
+void UFenixSupabaseSubsystem::OnFetchStoriesResponse(
+    FHttpRequestPtr Req, FHttpResponsePtr Res, bool bOk)
+{
+    if (!bOk || !Res.IsValid())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchPublishedStories: sin conexión"));
+        OnStoriesListLoaded.Broadcast(false, TArray<FFenixStory>{});
+        return;
+    }
+
+    int32 Code = Res->GetResponseCode();
+    FString Body = Res->GetContentAsString();
+
+    if (Code != 200)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchPublishedStories fallido %d: %s"),
+               Code, *ExtractErrorMessage(Body));
+        OnStoriesListLoaded.Broadcast(false, TArray<FFenixStory>{});
+        return;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> Root;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+    if (!FJsonSerializer::Deserialize(Reader, Root))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[Fenix] FetchPublishedStories: JSON inválido"));
+        OnStoriesListLoaded.Broadcast(false, TArray<FFenixStory>{});
+        return;
+    }
+
+    TArray<FFenixStory> Stories;
+    for (const auto& Val : Root)
+    {
+        const TSharedPtr<FJsonObject>* StoryObj;
+        if (!Val->TryGetObject(StoryObj)) continue;
+        FFenixStory Story;
+        (*StoryObj)->TryGetStringField(TEXT("uuid"),        Story.UUID);
+        (*StoryObj)->TryGetStringField(TEXT("name"),        Story.Name);
+        (*StoryObj)->TryGetStringField(TEXT("description"), Story.Description);
+        (*StoryObj)->TryGetStringField(TEXT("status"),      Story.Status);
+        if (!Story.UUID.IsEmpty()) Stories.Add(Story);
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("[Fenix] %d historias publicadas cargadas"), Stories.Num());
+    OnStoriesListLoaded.Broadcast(true, Stories);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Persistencia de sesión (SaveGame simple)
+// ─────────────────────────────────────────────────────────────
 void UFenixSupabaseSubsystem::LoadSessionFromSlot()
 {
     FString AccessToken, RefreshToken, UserId, UserEmail;
